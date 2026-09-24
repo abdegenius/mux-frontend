@@ -54,4 +54,62 @@ describe("/api/wallets/[id]", () => {
 		expect(serialized).not.toContain("jwt");
 		expect(serialized).not.toContain("authorization");
 	});
+
+	it("hides archived wallets by default (fail-closed)", async () => {
+		const response = await GET(new Request("http://localhost/api/wallets/wallet-archived"), {
+			params: {
+				id: "wallet-archived",
+			},
+		});
+
+		expect(response.status).toBe(404);
+
+		const body = await response.json();
+		expect(body).toMatchObject({
+			error: "not_found",
+			code: "WALLET_NOT_FOUND",
+			correlationId: expect.any(String),
+		});
+	});
+
+	it("returns an archived wallet when includeArchived=true is explicitly set", async () => {
+		const response = await GET(
+			new Request("http://localhost/api/wallets/wallet-archived?includeArchived=true"),
+			{
+				params: {
+					id: "wallet-archived",
+				},
+			},
+		);
+
+		expect(response.status).toBe(200);
+
+		const body = await response.json();
+		expect(body).toMatchObject({
+			id: "wallet-archived",
+			address: expect.any(String),
+			network: expect.any(String),
+			status: expect.any(String),
+			archived: true,
+		});
+	});
+
+	it("does not treat non-true includeArchived values as an opt-in", async () => {
+		const response = await GET(
+			new Request("http://localhost/api/wallets/wallet-archived?includeArchived=1"),
+			{
+				params: {
+					id: "wallet-archived",
+				},
+			},
+		);
+
+		expect(response.status).toBe(404);
+
+		const body = await response.json();
+		expect(body).toMatchObject({
+			error: "not_found",
+			code: "WALLET_NOT_FOUND",
+		});
+	});
 });

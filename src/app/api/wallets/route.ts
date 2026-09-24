@@ -14,5 +14,12 @@ export async function GET(request: Request) {
 		return NextResponse.json({ error: "invalid_token" }, { status: 401 });
 	}
 
-	return NextResponse.json(dummyWallets);
+	const { searchParams } = new URL(request.url);
+	const includeArchived = searchParams.get("includeArchived") === "true";
+
+	const wallets = includeArchived
+		? dummyWallets
+		: dummyWallets.filter((wallet) => !wallet.archived);
+
+	return NextResponse.json(wallets);
 }

@@ -10,6 +10,7 @@ type RouteContext = {
 };
 
 const WALLET_NOT_FOUND = "WALLET_NOT_FOUND";
+const WALLET_ARCHIVED = "WALLET_ARCHIVED";
 
 function correlationId(request: Request): string {
 	const header = request.headers.get("x-correlation-id")?.trim();
@@ -17,6 +18,10 @@ function correlationId(request: Request): string {
 		return header;
 	}
 	return crypto.randomUUID();
+}
+
+function isArchived(wallet: { archived?: boolean }): boolean {
+	return wallet.archived === true;
 }
 
 export async function GET(request: Request, { params }: RouteContext) {
@@ -37,6 +42,31 @@ export async function GET(request: Request, { params }: RouteContext) {
 				error: {
 					code: WALLET_NOT_FOUND,
 					message: "Wallet not found.",
+					correlationId: correlationIdValue,
+				},
+			},
+			{
+				status: 404,
+				headers: { "x-correlation-id": correlationIdValue },
+			},
+		);
+	}
+
+	// Archived wallets are hidden by default (fail-closed / least-surprise).
+	// They only resolve when the caller explicitly opts in via ?includeArchived=true.
+	const includeArchived =
+		new URL(request.url).searchParams.get("includeArchived") === "true";
+
+	if (isArchived(wallet) && !includeArchived) {
+		console.warn(
+			`[wallets] ${WALLET_ARCHIVED} id=${walletId} correlationId=${correlationIdValue}`,
+		);
+
+		return NextResponse.json(
+			{
+				error: {
+					code: WALLET_ARCHIVED,
+					message: "Wallet is archived.",
 					correlationId: correlationIdValue,
 				},
 			},
