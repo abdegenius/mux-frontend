@@ -20,7 +20,7 @@ describe("/api/wallets/[id]", () => {
 		});
 	});
 
-	it("returns 404 when the wallet is missing", async () => {
+	it("returns 404 with a stable error code and correlation id when the wallet is missing", async () => {
 		const response = await GET(new Request("http://localhost/api/wallets/missing"), {
 			params: {
 				id: "missing",
@@ -28,6 +28,30 @@ describe("/api/wallets/[id]", () => {
 		});
 
 		expect(response.status).toBe(404);
-		await expect(response.json()).resolves.toEqual({ error: "not_found" });
+
+		const body = await response.json();
+		expect(body).toMatchObject({
+			error: "not_found",
+			code: "WALLET_NOT_FOUND",
+			correlationId: expect.any(String),
+		});
+		expect(body.correlationId.length).toBeGreaterThan(0);
+	});
+
+	it("does not leak secrets or raw key material in the not-found response", async () => {
+		const response = await GET(new Request("http://localhost/api/wallets/missing"), {
+			params: {
+				id: "missing",
+			},
+		});
+
+		const body = await response.json();
+		const serialized = JSON.stringify(body).toLowerCase();
+
+		expect(serialized).not.toContain("secret");
+		expect(serialized).not.toContain("privatekey");
+		expect(serialized).not.toContain("private_key");
+		expect(serialized).not.toContain("jwt");
+		expect(serialized).not.toContain("authorization");
 	});
 });
