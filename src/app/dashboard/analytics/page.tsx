@@ -7,10 +7,12 @@ import {
 	type DateRange,
 } from "@/components/analytics/AnalyticsHeader";
 import { AnalyticsLoadingSkeleton } from "@/components/analytics/AnalyticsLoadingSkeleton";
+import { ApiKeyUsageChart } from "@/components/analytics/ApiKeyUsageChart";
 import { MetricsCards } from "@/components/analytics/MetricsCards";
 import { TopAssetsTable } from "@/components/analytics/TopAssetsTable";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { useAnalytics } from "@/hooks/useAnalytics";
+import { useApiKeyUsage } from "@/hooks/useApiKeyUsage";
 
 export default function AnalyticsPage() {
 	const [range, setRange] = useState<DateRange>(() => {
@@ -23,6 +25,13 @@ export default function AnalyticsPage() {
 		};
 	});
 	const { data, isLoading, isError, error, refetch } = useAnalytics();
+	const {
+		data: usageData,
+		isLoading: isUsageLoading,
+		isError: isUsageError,
+		error: usageError,
+		refetch: refetchUsage,
+	} = useApiKeyUsage(range);
 
 	if (isLoading) {
 		return <AnalyticsLoadingSkeleton />;
@@ -57,6 +66,14 @@ export default function AnalyticsPage() {
 					data={data.transactionsData}
 				/>
 			</div>
+
+			<ApiKeyUsageChart
+				data={usageData}
+				isLoading={isUsageLoading}
+				isError={isUsageError}
+				error={usageError}
+				onRetry={refetchUsage}
+			/>
 
 			<TopAssetsTable assets={data.topAssets} />
 		</div>

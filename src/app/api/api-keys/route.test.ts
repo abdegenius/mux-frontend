@@ -127,3 +127,71 @@ describe('DELETE /api/api-keys (revoke)', () => {
     expect(json.error.code).toBe('API_KEY_NOT_FOUND');
   });
 });
+
+describe('GET /api/api-keys/usage (analytics)', () => {
+  it('returns per-key usage time-series data', async () => {
+    const res = await GET(
+      new Request('http://localhost/api/api-keys/usage?keyId=key_1&range=7d'),
+    );
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.data).toHaveProperty('keyId', 'key_1');
+    expect(Array.isArray(json.data.series)).toBe(true);
+    expect(json.data.series.length).toBeGreaterThan(0);
+
+    for (const point of json.data.series) {
+      expect(point).toHaveProperty('timestamp');
+      expect(typeof point.requests).toBe('number');
+      expect(typeof point.errors).toBe('number');
+    }
+  });
+
+  it('never leaks raw key material in the analytics response', async () => {
+    const res = await GET(
+      new Request('http://localhost/api/api-keys/usage?keyId=key_1&range=7d'),
+    );
+    const json = await res.json();
+
+    expect(JSON.stringify(json)).not.toMatch(/sk_live_|sk_test_/);
+    expect(json.data).not.toHaveProperty('secret');
+    expect(json.data).not.toHaveProperty('rawKey');
+  });
+
+  it('denies by default when no authz context is provided', async () => {
+    const res = await GET(
+      new Request('http://localhost/api/api-keys/usage?keyId=key_1&range=7d', {
+        headers: { 'x-mux-role': 'anonymous' },
+      }),
+    );
+    const json = await res.json();
+
+    expect(res.status).toBe(403);
+    expect(json.error.code).toBe('FORBIDDEN');
+  });
+
+  it('fails closed with a stable error code when the key is unknown', async () => {
+    const res = await GET(
+      new Request('http://localhost/api/api-keys/usage?keyId=missing&range=7d'),
+    );
+    const json = await res.json();
+
+    expect(res.status).toBe(404);
+    expect(json.error.code).toBe('API_KEY_NOT_FOUND');
+  });
+
+  it('surfaces actionable errors with a correlation id on dependency outage', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValueOnce(new Error('db down'));
+
+    const res = await GET(
+      new Request('http://localhost/api/api-keys/usage?keyId=key_1&range=7d'),
+    );
+    const json = await res.json();
+
+    expect(res.status).toBe(503);
+    expect(json.error.code).toBe('ANALYTICS_UNAVAILABLE');
+    expect(json.error.correlationId).toBeTruthy();
+
+    vi.restoreAllMocks();
+  });
+});
