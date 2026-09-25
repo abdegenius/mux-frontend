@@ -118,6 +118,19 @@ These never reach the browser and are safe for secrets.
   `todayUsage` from the mock transaction store
   (`computeTodayUsage()` in `src/lib/spending-limits/todayUsage.ts`).
 
+  **Fail-closed contract (#758):** the proxy is deny-by-default. When
+  `MUX_BACKEND_URL` is unset (or blank) the route must **not** fall back to
+  mock data, a fabricated `todayUsage`, or an unauthenticated passthrough —
+  it returns a deterministic `503` with a stable error code
+  (`backend_not_configured`) and a correlation id so ops can trace the
+  misconfiguration without leaking the backend URL, API key, or any caller
+  JWT. Authz is enforced on the entrypoint *before* any upstream call, so a
+  client cannot bypass spending-limit policy by hitting the proxy directly.
+  Error responses and logs redact sensitive values (backend URL, keys,
+  `Authorization` headers). See `docs/security-ux-guards.md` for the
+  guard/UX rationale and `tests/e2e/` for the misconfiguration and auth
+  negative coverage.
+
 ### Implicit
 
 - **`NODE_ENV`** — standard Next.js variable. Gates verbose
@@ -169,3 +182,18 @@ The wallet rows themselves also carry a per-wallet `network` field
 (`"testnet"` \| `"mainnet"`, see `src/types/wallet.ts`), which the UI uses
 for display only. The server remains the source of truth for which network
 a wallet actually lives on; the client never decides that from env vars.
+
+## Production never silently serves mock data
+
+`/api/auth/login`, `/api/auth/refresh`, `/api/wallets`,
+`/api/wallets/[id]`, `/api/overview`, and `/api/api-keys` (`GET`/`POST`/
+`PATCH`) fall back to in-repo mock responses (fake wallets, dashboard
+stats, API keys, and a hardcoded mock bearer/refresh token) whenever no
+backend URL is configured — that's what lets `pnpm run dev`, CI, and the
+`/demo` routes run with no live backend. `isMockFallbackAllowed()`
+(`src/lib/api/config.ts`) disables that fallback whenever
+`NODE_ENV=production`: those routes return `503 backend_unavailable`
+instead. This matters because the mock fallback accepts a hardcoded
+bearer token (`mock-access-token`) and refresh token
+(`mock-refresh-token`) as valid, and `/api/api-keys` would otherwise
+create/list/revoke against a `localStorage`-backed 

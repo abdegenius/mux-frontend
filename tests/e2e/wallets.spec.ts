@@ -35,6 +35,37 @@ test.describe("Wallets dashboard smoke", () => {
 		).toBeVisible();
 	});
 
+	test("shows a loading skeleton while the wallets request is in flight", async ({
+		page,
+	}) => {
+		// Hold the wallets response open so the loading state is observable,
+		// then release it and assert the skeleton is replaced by real data.
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+
+		await page.route("**/api/wallets*", async (route) => {
+			await gate;
+			return route.fulfill({
+				status: 200,
+				contentType: "application/json",
+				body: JSON.stringify([]),
+			});
+		});
+
+		await signIn(page);
+		await page.goto("/dashboard/wallets");
+
+		// Loading state is announced and the table is not yet rendered.
+		await expect(page.getByTestId("wallets-loading")).toBeVisible();
+		await expect(page.getByTestId("wallet-row-0")).toHaveCount(0);
+
+		release();
+		await expect(page.getByTestId("wallets-loading")).toHaveCount(0);
+		await expect(page.getByText("No wallets found")).toBeVisible();
+	});
+
 	test("shows the error state when the wallets API is unreachable", async ({
 		page,
 	}) => {
@@ -48,6 +79,33 @@ test.describe("Wallets dashboard smoke", () => {
 			page.getByText("Failed to load wallets", { exact: false }),
 		).toBeVisible();
 		await page.getByRole("button", { name: "Retry" }).click();
+	});
+
+	test("fails closed on wallets fetch error without rendering stale rows", async ({
+		page,
+	}) => {
+		// Dependency outage must fail closed: an actionable error with a
+		// stable code/correlation id is shown and no wallet rows are rendered
+		// as if the data were valid.
+		await page.route("**/api/wallets*", (route) =>
+			route.fulfill({
+				status: 503,
+				contentType: "application/json",
+				headers: { "x-correlation-id": "corr-wallets-503" },
+				body: JSON.stringify({
+					code: "WALLETS_UNAVAILABLE",
+					message: "Wallets are temporarily unavailable",
+					correlationId: "corr-wallets-503",
+				}),
+			}),
+		);
+
+		await signIn(page);
+		await page.goto("/dashboard/wallets");
+
+		await expect(page.getByTestId("wallets-error")).toBeVisible();
+		await expect(page.getByTestId("wallet-row-0")).toHaveCount(0);
+		await expect(page.getByText("No wallets found")).toHaveCount(0);
 	});
 
 	test("shows the empty state when no wallets are returned", async ({
@@ -168,5 +226,71 @@ test.describe("Wallets dashboard smoke", () => {
 		await page.getByRole("button", { name: "Switch to Testnet" }).click();
 		await expect(row.getByText("Testnet")).toBeVisible();
 		await expect(row.getByText("Mainnet")).toHaveCount(0);
+	});
+
+	test("shows live today-usage on the spending limits card", async ({
+		page,
+	}) => {
+		// The spending limits card must surface the live "today usage" figure
+		// from the typed today-usage endpoint. The fake backend returns a
+		// stable payload with a correlation id so the card can render the
+		// amount and the as-of timestamp without leaking key material.
+		await page.route("**/api/spending-limits/today-usage*", (route) =>
+			route.fulfill({
+				status: 200,
+				contentType: "application/json",
+				headers: { "x-correlation-id": "corr-today-usage-001" },
+				body: JSON.stringify({
+					limit: "1000.00 XLM",
+					used: "250.00 XLM",
+					remaining: "750.00 XLM",
+					asOf: "2024-03-01T12:00:00Z",
+					correlationId: "corr-today-usage-001",
+				}),
+			}),
+		);
+
+		await signIn(page);
+		await page.goto("/dashboard/wallets");
+
+		const card = page.getByTestId("spending-limits-card");
+		await expect(card).toBeVisible();
+		await expect(card.getByText("Today's usage")).toBeVisible();
+		await expect(card.getByTestId("today-usage-used")).toHaveText(
+			"250.00 XLM",
+		);
+		await expect(card.getByTestId("today-usage-remaining")).toHaveText(
+			"750.00 XLM",
+		);
+	});
+
+	test("fails closed on the spending limits card when today-usage is unavailable", async ({
+		page,
+	}) => {
+		// Dependency outage (RPC/DB/Horizon) must fail closed: the card shows
+		// an actionable error with the correlation id instead of a stale or
+		// fabricated usage figure, and never leaks raw key material.
+		await page.route("**/api/spending-limits/today-usage*", (route) =>
+			route.fulfill({
+				status: 503,
+				contentType: "application/json",
+				headers: { "x-correlation-id": "corr-today-usage-503" },
+				body: JSON.stringify({
+					code: "TODAY_USAGE_UNAVAILABLE",
+					message: "Today usage is temporarily unavailable",
+					correlationId: "corr-today-usage-503",
+				}),
+			}),
+		);
+
+		await signIn(page);
+		await page.goto("/dashboard/wallets");
+
+		const card = page.getByTestId("spending-limits-card");
+		await expect(card).toBeVisible();
+		await expect(
+			card.getByText("Today usage is temporarily unavailable"),
+		).toBeVisible();
+		await expect(card.getByTestId("today-usage-used")).toHaveCount(0);
 	});
 });

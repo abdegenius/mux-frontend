@@ -108,6 +108,30 @@ the network within it. The CI workflow (`.github/workflows/ci.yml`) sets a
 placeholder `NEXT_PUBLIC_API_URL` only so `next build` can run without
 secrets; it does not reflect a real environment.
 
+**NetworkContext scopes the wallets query only.** `NetworkContext`
+(`src/contexts/NetworkContext.tsx`) is the single source of truth for the
+active network and exposes a typed, stable API — `network` (`'testnet' |
+'mainnet'`), `chain` (`'stellar-testnet' | 'stellar-mainnet'`),
+`isMainnet`/`isTestnet`, and `setNetwork`. Only the wallets query is scoped
+by it: `useWallets` reads the active network from `NetworkContext` and
+sends it as the `?network=` param on `/api/wallets`, so cross-network
+wallet data can never leak into or be queried from the wrong network.
+Other data hooks (overview, transactions, notifications, analytics) are
+**not** network-scoped by `NetworkContext` and must not assume it — they
+follow the backend selected by `NEXT_PUBLIC_API_URL`. This keeps the
+network scope in exactly one place instead of being applied inconsistently
+across the app.
+
+**Fail-closed on network misconfiguration.** The wallets query only runs
+against a known, supported network. If `NetworkContext` is missing, or the
+active network is unknown/unsupported, `useWallets` does not issue a
+request and surfaces a stable error code (`network_unconfigured` /
+`unsupported_network`) with a correlation id rather than falling back to a
+default network — so a testnet/mainnet misconfig can never silently query
+the wrong network's wallets. The same fail-closed rule applies when the
+backend is unreachable: the wallets query errors out instead of returning
+cross-network or fabricated data.
+
 **Production defaults:** when `NODE_ENV=production`, unset vars with a
 documented default (e.g. `NEXT_PUBLIC_MUX_API_URL` →
 `https://api.muxprotocol.com`) are applied automatically by `getEnv()`,
@@ -157,4 +181,14 @@ verification checklist.
   behaviour: on a `401` it calls `POST /api/auth/refresh` once and retries the original request with the
   r
 
-/* … truncated 5545 chars — edit only what you need near the top … */
+frontend-env-vars.md`](docs/frontend-env-vars.md) for the full
+reference, including which file reads each variable and a manual
+verification checklist.
+
+### Auth and API client behavior
+
+* `src/lib/api.js` adds request header support with `x-request-id` and automatic session refresh on `401`
+* `src/utils/fetchWithAuth.ts` (used by `useWallets` / `useWallet` / the Send flow) mirrors that
+  behaviour: on a `401` it calls `POST /api/auth/refresh` once and retries the original request with the
+  r
+
