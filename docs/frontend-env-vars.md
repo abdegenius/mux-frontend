@@ -48,6 +48,20 @@ in a `NEXT_PUBLIC_*` variable.
   `config.ts` documents the exact order so tests can verify it without
   reimplementing it. Use `getActiveApiUrlVar()` (also exported from
   `config.ts`) to log which alias is actually in effect at startup.
+
+  **Alias chain invariants (#755):** the chain is *ordered* and
+  *fail-closed*. Every documented alias resolves to the same canonical API
+  base URL — the first non-empty candidate wins, and the remaining aliases
+  are ignored, so two aliases pointing at different hosts never produce a
+  split-brain client. When *no* alias is set the chain does **not** silently
+  fall back to an unintended host: outside production it returns the empty
+  string (routes then use their in-repo mocks), and in production it
+  resolves to the documented default `https://api.muxprotocol.com` via
+  `getEnv()` (see "Production defaults"). A blank/whitespace-only value is
+  treated as unset, never as a valid base URL. These invariants are covered
+  end-to-end by `tests/api-client.test.js`, which asserts each alias in
+  `API_URL_CANDIDATES` resolves to the same canonical base and that a
+  missing/invalid config never silently selects an unintended host.
 - **`NEXT_PUBLIC_APP_URL`** — this app's own public URL; defaults to
   `http://localhost:3000`.
 - **`NEXT_PUBLIC_WALLET_CONNECT_PROJECT_ID`** — only relevant if
@@ -70,6 +84,21 @@ These never reach the browser and are safe for secrets.
   route makes to the Mux backend. Only ever read inside `src/app/api/**`
   route handlers or other server-only modules — **never import
   `getApiKey()`/`getApiSecret()` from a client component** (#694).
+
+  **Invariant (#756): `MUX_API_KEY`/`MUX_API_SECRET` are never
+  client-bundled.** These two names are *not* prefixed with
+  `NEXT_PUBLIC_`, so Next.js never inlines them into the browser bundle,
+  and they are deliberately kept out of any `next.config.ts` public-env
+  passthrough. The only sanctioned way to read them is through the
+  server-only helpers in `src/lib/env.ts` (`getServerOnlyEnv()` /
+  `assertServerSide()`), which fail closed: calling them from a browser
+  context (`window` defined) throws a stable error code instead of
+  returning `undefined`, and a missing required server var throws rather
+  than silently sending unauthenticated upstream requests. Do not read
+  `process.env.MUX_API_KEY`/`process.env.MUX_API_SECRET` directly, and do
+  not add a `NEXT_PUBLIC_MUX_API_*` alias — either would defeat this
+  guard. See `docs/security-ux-guards.md` for the full guard contract and
+  the negative tests that enforce it.
 
   As an extra defence-in-depth measure, `assertServerSide()` and
   `getServerOnlyEnv()` in `src/lib/env.ts` throw at runtime whenever they
@@ -137,68 +166,6 @@ Two independent things decide "which network" a request is scoped to:
    `src/app/dashboard/wallets/page.tsx`.)
 
 The wallet rows themselves also carry a per-wallet `network` field
-(`"testnet"` \| `"mainnet"`, see `src/types/wallet.ts`) that both the
-backend proxy and the mock fallback in `/api/wallets` use to honor that
-query param.
-
-## Production never silently serves mock data
-
-`/api/auth/login`, `/api/auth/refresh`, `/api/wallets`,
-`/api/wallets/[id]`, `/api/overview`, and `/api/api-keys` (`GET`/`POST`/
-`PATCH`) fall back to in-repo mock responses (fake wallets, dashboard
-stats, API keys, and a hardcoded mock bearer/refresh token) whenever no
-backend URL is configured — that's what lets `pnpm run dev`, CI, and the
-`/demo` routes run with no live backend. `isMockFallbackAllowed()`
-(`src/lib/api/config.ts`) disables that fallback whenever
-`NODE_ENV=production`: those routes return `503 backend_unavailable`
-instead. This matters because the mock fallback accepts a hardcoded
-bearer token (`mock-access-token`) and refresh token
-(`mock-refresh-token`) as valid, and `/api/api-keys` would otherwise
-create/list/revoke against a `localStorage`-backed mock store — without
-the guard, a production deployment that forgot to set
-`NEXT_PUBLIC_API_URL` would silently serve fabricated wallets/analytics/API
-keys and accept those hardcoded tokens as a real authenticated session.
-
-`APIKeyModal`'s own client-side key generator (used only when a caller
-renders it without an `onCreateKey` handler, e.g. Storybook) follows the
-same rule: it throws instead of fabricating a secret whenever
-`isMockFallbackAllowed()` is `false`.
-
-The wallets sidebar prefetch (`src/lib/walletsPrefetchCache.ts`) attaches
-the caller's session token to its request and keys its in-memory cache
-entry by that token, so a prefetch started under one session can never be
-served to a different session that signs in afterward on the same
-tab/device within the cache's 30s TTL.
-
-## CI
-
-`.github/workflows/ci.yml` sets `NEXT_PUBLIC_API_URL=https://api.example.com`
-for the `build` job purely so `next build` succeeds without real
-credentials. It is a placeholder, not a real environment — do not read it
-as evidence of a live mainnet or testnet target.
-
-The `e2e-tests` job (Playwright) instead sets `NEXT_PUBLIC_API_URL=""` so
-the specs exercise the in-repo mock `/api/*` routes with no backend. No
-job sets `MUX_BACKEND_URL`, so `/api/spending-limits` returns `503` in CI
-— the e2e specs cover login and wallet flows, not spending limits.
-
-## Manual verification checklist
-
-- [ ] `.env.local` unset entirely → `pnpm run dev` still boots and login
-      succeeds against the mock `/api/auth/login` route.
-- [ ] `NEXT_PUBLIC_API_URL` set to a real backend → login proxies through
-      instead of using the mock.
-- [ ] `NEXT_PUBLIC_APP_URL` changed → any absolute links that use it
-      update accordingly.
-- [ ] Removing a `NEXT_PUBLIC_*` var and setting `NODE_ENV=production`
-      surfaces a startup error only for vars marked `required` in
-      `src/lib/env.ts` (none currently are, by design).
-- [ ] `NODE_ENV=production` with `NEXT_PUBLIC_API_URL` (and its aliases)
-      unset → `/api/wallets`, `/api/wallets/[id]`, `/api/auth/login`,
-      `/api/auth/refresh`, `/api/overview`, and `/api/api-keys` all return
-      `503 { error: "backend_unavailable" }` instead of mock data, and the
-      hardcoded mock bearer/refresh tokens are rejected.
-- [ ] Switching the in-app Testnet/Mainnet control on `/dashboard/wallets`
-      re-fetches `/api/wallets?network=<selected>` and shows only that
-      network's wallets — with no separate "all networks" filter control
-      left on the page to disagree with it.
+(`"testnet"` \| `"mainnet"`, see `src/types/wallet.ts`), which the UI uses
+for display only. The server remains the source of truth for which network
+a wallet actually lives on; the client never decides that from env vars.
